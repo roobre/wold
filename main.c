@@ -2,23 +2,42 @@
 
 #include "wold.h"
 #include "wold_cmd_callback.h"
+#include "wold_parser.h"
 
-void print_found(void* callback_id) {
-    printf("Found for cb %ld!\n", (long) callback_id);
-}
+int main(int argc, char** argv) {
+    if (argc < 2) {
+        fprintf(stderr, "Usage: %s <interface> [config.txt]\n", argv[0]);
+        return 1;
+    }
 
-uint8_t my_mac[]  = {1, 2, 3, 4, 5, 6};
+    const char* configfile;
+    if (argc < 3) {
+        configfile = "config.txt";
+    } else {
+        configfile = argv[2];
+    }
 
-int main() {
-    struct wold_callback cb1 = {
-            .mac = my_mac,
-            .callback = wold_cmd_callback,
-            .userarg = "date -I && exit 99",
-    };
+    struct wold* w = wold_new(argv[1]);
 
-    struct wold* w = wold_new("br0");
-    wold_add_callback(w, &cb1);
-    int error = wold_start(w);
+    struct wold_config_parser parser;
+    printf("Loading confif file from %s\n", configfile);
+    if (wcp_open(&parser, configfile) != WOLD_CONFIG_OK)
+        return 1;
 
-    printf("Result: %d\n", error);
+    for (;;) {
+        struct wold_callback cb;
+        cb.callback = wold_cmd_callback;
+        enum wold_parser_result res = wcp_parse(&parser, &cb);
+        if (res == WOLD_CONFIG_NOENTRY)
+            break;
+        if (res == WOLD_CONFIG_MALFORMED)
+            continue;
+
+        printf("Registered callback '%s' to MAC %02x\n", cb.userarg, cb.mac[5]);
+
+        wold_add_callback(w, &cb);
+    }
+
+    wold_start(w);
+    wcp_close(&parser);
 }

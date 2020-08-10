@@ -3,4 +3,4 @@ project(wold C)
 
 set(CMAKE_C_STANDARD 99)
 
-add_executable(wold main.c wold.c wold.h wold_cmd_callback.c wold_cmd_callback.h)
+add_executable(wold main.c wold.c wold.h wold_cmd_callback.c wold_cmd_callback.h wold_parser.c wold_parser.h)
