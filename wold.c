@@ -12,14 +12,50 @@
 
 #define MAX_CB_NUM 16
 
+const unsigned cb_list_start_capacity = 16;
+
+struct callback_list {
+    struct wold_callback* list;
+    size_t items;
+    size_t capacity;
+};
+
+static int cb_list_add(struct callback_list* l, const struct wold_callback* callback) {
+    if (l->capacity <= l->items) {
+        unsigned newcap;
+        if (l->capacity == 0)
+            newcap = cb_list_start_capacity;
+        else
+            newcap = 2 * l->capacity;
+
+        void* newptr = realloc(l->list, newcap * sizeof(struct wold_callback));
+        if (newptr == NULL)
+            return 1;
+
+        l->list = newptr;
+        l->capacity = newcap;
+    }
+
+    memcpy(&(l->list[l->items]), callback, sizeof(struct wold_callback));
+    l->items++;
+
+    return 0;
+}
+
+static int cb_list_free(struct callback_list* l) {
+    free(l->list);
+    l->capacity = 0;
+    l->items = 0;
+}
+
+
 struct wold {
     const char* interface;
-    struct wold_callback callbacks[MAX_CB_NUM];
-    int num_callbacks;
+    struct callback_list cblist;
 };
 
 static void parse_packet(struct wold* w, const uint8_t* packetbuf, size_t buflen);
-static int find_and_dispatch(struct wold* w, const uint8_t* magic);
+static int find_and_dispatch(const struct wold* w, const uint8_t* magic);
 
 static int is_wol_for_host(const uint8_t* magic, const uint8_t* mac);
 
@@ -36,22 +72,19 @@ struct wold* wold_new(const char* interface) {
 }
 
 void wold_free(struct wold* w) {
+    cb_list_free(&w->cblist);
     free(w);
 }
 
 enum wold_result wold_add_callback(struct wold* w, const struct wold_callback* cb) {
-    if (w->num_callbacks == MAX_CB_NUM)
+    if (cb_list_add(&w->cblist, cb) != 0)
         return WOLD_RESULT_FULL;
-
-    memcpy(&w->callbacks[w->num_callbacks], cb, sizeof(struct wold_callback));
-
-    w->num_callbacks++;
 
     return WOLD_RESULT_OK;
 }
 
 enum wold_result wold_start(struct wold* w) {
-    int interface = if_nametoindex(w->interface);
+    unsigned interface = if_nametoindex(w->interface);
     if (interface == 0)
         return WOLD_IF_NOT_FOUND;
 
@@ -61,18 +94,18 @@ enum wold_result wold_start(struct wold* w) {
 
     struct sockaddr_ll bindaddr = {
             .sll_family = AF_PACKET,
+            .sll_ifindex = (int) interface,
             .sll_pkttype = PACKET_BROADCAST,
-            .sll_ifindex = interface,
     };
 
-    int bindres = bind(sock, &bindaddr, sizeof(bindaddr));
+    int bindres = bind(sock, (struct sockaddr*) &bindaddr, sizeof(bindaddr));
     if (bindres != 0)
         return errno;
 
     uint8_t sockbuf[2*1024];
     do {
-        recv(sock, sockbuf, sizeof(sockbuf), 0);
-        parse_packet(w, sockbuf, sizeof(sockbuf));
+        size_t frame_len = recv(sock, sockbuf, sizeof(sockbuf), 0);
+        parse_packet(w, sockbuf, frame_len);
     } while (errno == 0);
 
     return errno;
@@ -97,8 +130,8 @@ static void parse_packet(struct wold* w, const uint8_t* packetbuf, size_t buflen
         if (mpacket == NULL)
             return;
 
-        size_t matchsize = mpacket - payload;
-        if (buflen - matchsize < 17 * ETH_ALEN)
+        size_t matchpos = mpacket - payload;
+        if (buflen - matchpos < 17 * ETH_ALEN)
             return;
 
         if (memcmp(mpacket, ethbcast, ETH_ALEN) != 0) {
@@ -114,9 +147,9 @@ static void parse_packet(struct wold* w, const uint8_t* packetbuf, size_t buflen
     };
 }
 
-static int find_and_dispatch(struct wold* w, const uint8_t* magic) {
-    for (int h = 0; h < w->num_callbacks; h++) {
-        struct wold_callback* callback = &w->callbacks[h];
+static int find_and_dispatch(const struct wold* w, const uint8_t* magic) {
+    for (int h = 0; h < w->cblist.items; h++) {
+        const struct wold_callback* callback = &w->cblist.list[h];
 
         if (is_wol_for_host(magic, callback->mac)) {
             printf("Found magic packet for host ");
